@@ -157,4 +157,80 @@ Ici il n'y a pas de `rel="last"` : GitHub pagine par curseur (`after=…`), il n
 - Le corps reste la donnée pure (un tableau de ressources), sans enveloppe de métadonnées.
 - Le client lit la pagination sans parser le JSON (possible même avec une requête `HEAD`).
 - C'est un standard (RFC 8288, `Link`) compris par des clients génériques.
-- Le serveur fournit des URL toutes prêtes : le client ne les construit pas, et le serveur peut changer de mécanisme (numéro de page → curseur) sans casser les clients.
+- Le serveur fournit des URL toutes prêtes : le client ne les construit pas, et le serveur peut changer de mécanisme (numéro de page → curseur) sans casser les clients.git push
+
+## Étape 5 – Négociation de contenu
+
+**Requête 1 : README en Markdown brut**
+```powershell
+PS> curl.exe -s -H "Accept: application/vnd.github.raw+json" https://api.github.com/repos/nodejs/node/readme | Select-Object -First 5
+# Node.js
+
+Node.js is an open-source, cross-platform JavaScript runtime environment.
+
+For information on using Node.js, see the [Node.js website][].
+```
+En-tête de réponse : `Content-Type: application/vnd.github.raw+json; charset=utf-8`
+
+**Requête 2 : README en HTML**
+```powershell
+PS> curl.exe -s -H "Accept: application/vnd.github.html+json" https://api.github.com/repos/nodejs/node/readme | Select-Object -First 5
+<div id="readme" class="md" data-path="README.md"><article class="markdown-body entry-content container-lg" itemprop="text"><div class="markdown-heading" dir="auto"><h1 class="heading-element" dir="auto">Node.js</h1>...
+<p dir="auto">Node.js is an open-source, cross-platform JavaScript runtime environment.</p>
+```
+En-tête de réponse : `Content-Type: application/vnd.github.html+json; charset=utf-8`
+
+**Test supplémentaire : format non disponible**
+```powershell
+PS> curl.exe -s -D - -o NUL -H "Accept: application/xml" https://api.github.com/repos/nodejs/node/readme
+HTTP/1.1 415 Unsupported Media Type
+Content-Type: application/json; charset=utf-8
+```
+
+### Réponses
+- **En-tête qui choisit le format** : `Accept`, envoyé par le client. Même URI, même ressource (le README), deux représentations différentes. Le serveur confirme son choix dans `Content-Type`.
+- **Si aucun format demandé n'est disponible** : `406 Not Acceptable`.
+- **Observation** : GitHub répond `415 Unsupported Media Type` à `Accept: application/xml`, ce qui est incorrect : 415 concerne le format du corps **envoyé** par le client (`Content-Type`), alors que 406 concerne le format **demandé** (`Accept`).
+
+## Étape 6 – L'échelle de Richardson
+
+Rappel : niveau 0 = une seule URI et tout en POST ; niveau 1 = une URI par ressource ; niveau 2 = verbes HTTP et codes de statut utilisés correctement ; niveau 3 = hypermédia (la réponse contient des liens vers les actions et ressources liées).
+
+### GitHub REST API : niveau 3 (partiel)
+- Ressources : `/repos/nodejs/node`, `/repos/nodejs/node/issues`.
+- Verbes et statuts : `GET` → 200, `DELETE` sans jeton → 401, dépôt inexistant → 404, `If-None-Match` → 304.
+- Hypermédia : la réponse contient des liens vers les ressources liées :
+```json
+"url": "https://api.github.com/repos/nodejs/node",
+"issues_url": "https://api.github.com/repos/nodejs/node/issues{/number}",
+"owner": { "url": "https://api.github.com/users/nodejs" }
+```
+  et l'en-tête `Link: <...&page=2>; rel="next"` pour la pagination (étape 4).
+- Partiel : les liens décrivent les ressources liées, pas les actions possibles selon l'état de la ressource.
+
+### geo.api.gouv.fr : niveau 2 (imparfait)
+- Ressources identifiées par URI, avec sous-ressources :
+```powershell
+PS> curl.exe -s "https://geo.api.gouv.fr/communes/69123?fields=nom,codeDepartement"
+{"nom":"Lyon","codeDepartement":"69","code":"69123"}      → 200
+PS> curl.exe -s "https://geo.api.gouv.fr/communes/99999"
+Not Found                                                  → 404
+GET /departements/69/communes                              → 200
+```
+- Mais les statuts ne sont pas toujours respectés :
+```powershell
+PS> curl.exe -s -X POST "https://geo.api.gouv.fr/communes"
+Method POST not allowed                                    → 401
+```
+  Il faudrait `405 Method Not Allowed` (avec l'en-tête `Allow: GET`). Et `?codePostal=abc` renvoie 200 au lieu d'un 4xx (étape 3).
+- Aucun lien hypermédia dans les réponses → pas de niveau 3.
+
+### Pathly (API NestJS du projet d'équipe) : niveau 2
+Requêtes observées dans les tests HTTP de l'API (`apps/api/src/api.http.spec.ts`) :
+- `GET /api/v1/accounts` sans session → 401 ; avec session → 200
+- `GET /api/v1/accounts/{id inconnu}` → 404
+- `GET /api/v1/accounts/abc` → 400
+- `GET /api/v1/transactions?limit=1&cursor=...` → pagination par curseur en paramètre de requête
+
+Ressources au pluriel, version dans l'URI, statuts cohérents → niveau 2.
+Limites : `POST /api/v1/import/preview` et `POST /api/v1/import/commit` désignent des actions (style RPC) ; aucun lien hypermédia → pas de niveau 3.
