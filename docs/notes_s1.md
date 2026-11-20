@@ -63,3 +63,63 @@ PS> curl.exe -s -o NUL -w "%{http_code}\n" -H 'If-None-Match: W/\"c082118be2ae7e
 ### 2. Intérêt
 - **Application mobile** : aucune donnée téléchargée si rien n'a changé (0 octet de corps au lieu de 6618), donc économie de forfait et de batterie, et réponse plus rapide.
 - **Quota GitHub** : selon la documentation, une réponse 304 ne compte pas dans le quota **si la requête est authentifiée** (jeton). Sans jeton, on a observé que `X-RateLimit-Remaining` baisse quand même (50 → 49 après un 304). Le gain est donc sur la bande passante, pas sur le quota.
+
+## Étape 3 – Les erreurs
+
+**Requête 1 : dépôt GitHub inexistant**
+```powershell
+PS> curl.exe -s https://api.github.com/repos/nodejs/ce-depot-n-existe-pas -w "\n%{http_code}\n"
+{
+  "message": "Not Found",
+  "documentation_url": "https://docs.github.com/rest/repos/repos#get-a-repository",
+  "status": "404"
+}
+404
+```
+
+**Requête 2 : suppression d'un dépôt GitHub sans authentification**
+```powershell
+PS> curl.exe -s -X DELETE https://api.github.com/repos/nodejs/node -w "\n%{http_code}\n"
+{
+  "message": "Requires authentication",
+  "documentation_url": "https://docs.github.com/rest",
+  "status": "401"
+}
+401
+```
+
+**Requête 3 : code postal invalide sur geo.api.gouv.fr**
+```powershell
+PS> curl.exe -s "https://geo.api.gouv.fr/communes?codePostal=abc" -w "\n%{http_code}\n"
+[]
+200
+```
+
+### 1. Tableau comparatif
+
+| API | Requête | Statut | Catégorie | Format du corps d'erreur | Information utile pour corriger |
+|---|---|---|---|---|---|
+| GitHub | `GET /repos/nodejs/ce-depot-n-existe-pas` | 404 Not Found | erreur client (4xx) | JSON maison : `message`, `documentation_url`, `status` | le message « Not Found » + lien vers la doc de l'endpoint |
+| GitHub | `DELETE /repos/nodejs/node` (sans jeton) | 401 Unauthorized | erreur client (4xx) | JSON maison : `message`, `documentation_url`, `status` | « Requires authentication » : il faut envoyer un jeton |
+| geo.api.gouv.fr | `GET /communes?codePostal=abc` | 200 OK | succès (devrait être 4xx) | aucun : liste vide `[]` | aucune |
+
+Aucune de ces requêtes ne produit d'erreur serveur (5xx) : toutes viennent d'une erreur du client.
+
+**Format commun ?** Non. GitHub a son propre format JSON (et met `status` en chaîne `"404"` au lieu d'un nombre) ; geo.api.gouv.fr ne renvoie aucun corps d'erreur. Le plus utile au client est GitHub : message lisible + lien vers la documentation.
+
+### 2. Erreur qui ne respecte pas la sémantique HTTP
+La requête 3 sur geo.api.gouv.fr. `abc` n'est pas un code postal valide (5 chiffres attendus) : c'est une erreur du client, qui devrait recevoir un statut 4xx (`400 Bad Request`, ou `422` pour un filtre invalide). L'API répond `200 OK` avec une liste vide, ce qui fait croire à une recherche valide sans résultat. Le client ne peut pas savoir que sa requête est fausse.
+
+### 3. Réécriture au format RFC 9457 (requête 3)
+```http
+HTTP/1.1 422 Unprocessable Content
+Content-Type: application/problem+json
+
+{
+  "type": "https://geo.api.gouv.fr/problems/invalid-parameter",
+  "title": "Paramètre de requête invalide",
+  "status": 422,
+  "detail": "Le code postal 'abc' est invalide : 5 chiffres attendus (ex. 69001).",
+  "instance": "/communes?codePostal=abc"
+}
+```
