@@ -123,3 +123,38 @@ Content-Type: application/problem+json
   "instance": "/communes?codePostal=abc"
 }
 ```
+
+## Étape 4 – Collections et pagination
+
+**Requête 1 : filtre et sélection de champs (geo.api.gouv.fr)**
+```powershell
+PS> curl.exe -s "https://geo.api.gouv.fr/communes?nom=Lyon&fields=nom,code,population" | jq
+```
+Résultat (extrait, 7 communes renvoyées) :
+```json
+{"nom":"Lyon","code":"69123","population":519127,"_score":0.538}
+{"nom":"Cognat-Lyonne","code":"03080","population":706,"_score":0.442}
+{"nom":"Lyons-la-Forêt","code":"27377","population":756,"_score":0.435}
+{"nom":"Sainte-Foy-lès-Lyon","code":"69202","population":21692,"_score":0.336}
+```
+Sans `fields`, chaque commune contient aussi `codeDepartement`, `siren`, `codeEpci`, `codeRegion`, `codesPostaux`.
+
+**Requête 2 : pagination (GitHub)**
+```powershell
+PS> curl.exe -sI "https://api.github.com/repos/nodejs/node/issues?per_page=5" | Select-String '^link:'
+Link: <https://api.github.com/repositories/27193779/issues?per_page=5&after=Y3Vyc29yOnYyOpLPAAABofjVUWDPAAAAAYQWBb0%3D&page=2>; rel="next"
+```
+
+### 1. Filtrer et choisir les champs (geo.api.gouv.fr)
+- **Filtre** : par paramètre de requête, ici `?nom=Lyon`. La recherche est approximative : elle renvoie aussi Lyons-la-Forêt, Sainte-Foy-lès-Lyon…, triées par pertinence (`_score`).
+- **Choix des champs** : paramètre `fields`, ici `fields=nom,code,population`. Seuls ces champs sont renvoyés, ce qui allège la réponse.
+
+### 2. Information de page suivante (GitHub)
+Elle est dans un **en-tête**, pas dans le corps : l'en-tête `Link`, avec la relation `rel="next"`. Le corps ne contient que le tableau des issues.
+Ici il n'y a pas de `rel="last"` : GitHub pagine par curseur (`after=…`), il ne calcule donc pas le nombre total de pages.
+
+### 3. Avantage des liens de pagination dans un en-tête
+- Le corps reste la donnée pure (un tableau de ressources), sans enveloppe de métadonnées.
+- Le client lit la pagination sans parser le JSON (possible même avec une requête `HEAD`).
+- C'est un standard (RFC 8288, `Link`) compris par des clients génériques.
+- Le serveur fournit des URL toutes prêtes : le client ne les construit pas, et le serveur peut changer de mécanisme (numéro de page → curseur) sans casser les clients.
